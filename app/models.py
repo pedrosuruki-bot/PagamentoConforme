@@ -115,7 +115,7 @@ class PaymentBatch(Base):
 
 class PaymentBatchItem(Base):
     __tablename__ = "payment_batch_items"
-    __table_args__ = (UniqueConstraint("batch_id", "invoice_id", name="uq_batch_invoice"),)
+    __table_args__ = (UniqueConstraint("invoice_id", name="uq_invoice_in_one_payment_batch"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     batch_id: Mapped[int] = mapped_column(ForeignKey("payment_batches.id", ondelete="CASCADE"), index=True)
     invoice_id: Mapped[int] = mapped_column(ForeignKey("invoices.id", ondelete="RESTRICT"), index=True)
@@ -153,6 +153,7 @@ class Subscription(Base):
     stripe_subscription_id: Mapped[str] = mapped_column(String(120), default="", nullable=False)
     status: Mapped[str] = mapped_column(String(40), default="not_configured", nullable=False)
     price_id: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    last_stripe_event_created: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     stripe_price_id_base: str = ""
     resend_api_key: str = ""
     email_from: str = ""
-    payment_creditor_bic: str = ""
+    payment_debtor_bic: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

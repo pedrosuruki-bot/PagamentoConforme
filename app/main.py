@@ -1003,7 +1003,7 @@ def create_batch(request: Request, invoice_ids: list[int] = Form([]), csrf: str 
     ids = sorted(set(invoice_ids))
     if not ids:
         return RedirectResponse("/batches?error=empty", status_code=303)
-    invoices = list(db.scalars(select(Invoice).where(Invoice.company_id == company.id, Invoice.id.in_(ids), Invoice.status == "approved")))
+    invoices = list(db.scalars(select(Invoice).where(Invoice.company_id == company.id, Invoice.id.in_(ids), Invoice.status == "approved").order_by(Invoice.id)))
     if len(invoices) != len(ids):
         return RedirectResponse("/batches?error=eligibility", status_code=303)
     included = set(db.scalars(select(PaymentBatchItem.invoice_id).join(PaymentBatch, PaymentBatch.id == PaymentBatchItem.batch_id).where(PaymentBatch.company_id == company.id, PaymentBatchItem.invoice_id.in_(ids))))
@@ -1022,7 +1022,7 @@ def create_batch(request: Request, invoice_ids: list[int] = Form([]), csrf: str 
     try:
         xml_content = build_pain001(
             message_id=reference, company_name=company.name, debtor_iban=company.iban,
-            execution_date=date.today(), transactions=txs, creditor_bic=settings.payment_creditor_bic,
+            execution_date=date.today(), transactions=txs, debtor_bic=settings.payment_debtor_bic,
         )
     except (ValueError, InvalidOperation) as exc:
         logger.info("SEPA draft rejected during validation: %s", exc)
@@ -1115,6 +1115,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Assinatura do webhook inválida.")
     event_id = str(event.get("id") or "")
     event_type = str(event.get("type") or "")
+    event_created = int(event.get("created") or 0)
     if not event_id or not event_type:
         raise HTTPException(status_code=400, detail="Evento Stripe sem identificador ou tipo.")
     existing = db.scalar(select(WebhookEvent).where(WebhookEvent.stripe_event_id == event_id))
@@ -1158,19 +1159,24 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
             sub.stripe_customer_id = customer_id
         if event_type == "checkout.session.completed":
             sub.stripe_subscription_id = subscription_id or sub.stripe_subscription_id
-            sub.status = "pending_confirmation"
+            if sub.status not in {"active", "trialing", "past_due", "unpaid", "canceled", "cancelled", "incomplete_expired"}:
+                sub.status = "pending_confirmation"
         elif event_type.startswith("customer.subscription."):
-            sub.stripe_subscription_id = subscription_id or sub.stripe_subscription_id
-            raw_status = str(obj.get("status") or "")
-            sub.status = raw_status or ("canceled" if event_type.endswith(".deleted") else sub.status)
-            items = obj.get("items", {}).get("data", [])
-            if items:
-                price = items[0].get("price", {})
-                sub.price_id = str(price.get("id") or sub.price_id)
+            if event_created >= sub.last_stripe_event_created:
+                sub.stripe_subscription_id = subscription_id or sub.stripe_subscription_id
+                raw_status = str(obj.get("status") or "")
+                sub.status = raw_status or ("canceled" if event_type.endswith(".deleted") else sub.status)
+                items = obj.get("items", {}).get("data", [])
+                if items:
+                    price = items[0].get("price", {})
+                    sub.price_id = str(price.get("id") or sub.price_id)
+                sub.last_stripe_event_created = event_created
         elif event_type == "invoice.paid":
-            sub.status = "active"
+            if sub.status not in {"canceled", "cancelled", "incomplete_expired"}:
+                sub.status = "active"
         elif event_type == "invoice.payment_failed":
-            sub.status = "past_due"
+            if sub.status not in {"canceled", "cancelled", "incomplete_expired"}:
+                sub.status = "past_due"
         sub.updated_at = datetime.utcnow()
         webhook_record.status = "processed"
         webhook_record.processed_at = datetime.utcnow()

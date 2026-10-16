@@ -16,8 +16,10 @@ def _el(parent, tag, text=None):
 
 
 def build_pain001(*, message_id: str, company_name: str, debtor_iban: str,
-                  execution_date: date, transactions: list[dict], creditor_bic: str = "") -> str:
+                  execution_date: date, transactions: list[dict], debtor_bic: str = "") -> str:
     """Create a pain.001.001.03 draft. Bank acceptance must be verified per bank profile."""
+    if not message_id or len(message_id) > 35 or not all(ch.isalnum() or ch in "-_" for ch in message_id):
+        raise ValueError("O identificador do lote deve ter até 35 caracteres alfanuméricos, hífen ou underscore.")
     if not company_name.strip():
         raise ValueError("O nome da empresa ordenante é obrigatório.")
     debtor_iban = normalize_iban(debtor_iban)
@@ -31,6 +33,8 @@ def build_pain001(*, message_id: str, company_name: str, debtor_iban: str,
         name = str(tx.get("creditor_name", "")).strip()
         iban = normalize_iban(str(tx.get("creditor_iban", "")))
         amount = Decimal(str(tx.get("amount", "0"))).quantize(Decimal("0.01"))
+        if not amount.is_finite():
+            raise ValueError("O montante de um pagamento não é finito.")
         reference = str(tx.get("reference", "")).strip()[:140]
         if not name or not validate_iban(iban) or amount <= 0:
             raise ValueError("Existe um beneficiário, IBAN ou montante inválido.")
@@ -65,8 +69,8 @@ def build_pain001(*, message_id: str, company_name: str, debtor_iban: str,
     _el(debtor_id, "IBAN", debtor_iban)
     debtor_agent = _el(pmt, "DbtrAgt")
     debtor_fin = _el(debtor_agent, "FinInstnId")
-    if creditor_bic.strip():
-        _el(debtor_fin, "BIC", creditor_bic.strip().upper()[:11])
+    if debtor_bic.strip():
+        _el(debtor_fin, "BIC", debtor_bic.strip().upper()[:11])
     else:
         other = _el(debtor_fin, "Othr")
         _el(other, "Id", "NOTPROVIDED")
