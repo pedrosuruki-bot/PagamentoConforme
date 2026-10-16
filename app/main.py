@@ -1,6 +1,4 @@
-import csv
 import hashlib
-import io
 import json
 import logging
 import secrets
@@ -27,6 +25,7 @@ from app.models import AuditLog, Company, Document, Invoice, Membership, Payment
 from app.security import csrf_token, hash_password, make_submission_token, read_submission_token, token_hash, verify_csrf, verify_password
 from app.services.documents import detect_file_type, extract_pdf_text, extract_portuguese_invoice_qr, suggest_invoice_fields
 from app.services.sepa import build_pain001, validate_draft_xml
+from app.services.vendor_csv import VendorCSVError, parse_subcontractor_csv
 from app.storage import put_private_file, read_private_file
 from app.validators import normalize_iban, normalize_nif, safe_filename, validate_iban, validate_portuguese_nif
 
@@ -501,78 +500,16 @@ def vendor_import_preview(request: Request, file: UploadFile = File(...),
         return render(request, "vendor_import.html", status_code=400, current_user=ctx["user"],
                       current_company=ctx["company"], error="Envie um ficheiro com extensão .csv.")
     content = file.file.read(1_000_001)
-    if not content:
-        return render(request, "vendor_import.html", status_code=400, current_user=ctx["user"],
-                      current_company=ctx["company"], error="O ficheiro está vazio.")
-    if len(content) > 1_000_000:
-        return render(request, "vendor_import.html", status_code=413, current_user=ctx["user"],
-                      current_company=ctx["company"], error="O ficheiro excede o limite de 1 MB.")
-    try:
-        csv_text = content.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return render(request, "vendor_import.html", status_code=400, current_user=ctx["user"],
-                      current_company=ctx["company"], error="O CSV tem de estar codificado em UTF-8.")
-    reader = csv.DictReader(io.StringIO(csv_text))
-    if not reader.fieldnames:
-        return render(request, "vendor_import.html", status_code=400, current_user=ctx["user"],
-                      current_company=ctx["company"], error="Não foram encontrados cabeçalhos no CSV.")
-    aliases = {
-        "name": "name", "nome": "name", "empresa": "name", "denominacao_social": "name",
-        "nif": "nif", "vat": "nif", "email": "email", "e-mail": "email",
-        "phone": "phone", "telefone": "phone", "telemovel": "phone",
-        "iban": "iban", "notes": "notes", "notas": "notes",
-    }
-    column_map = {str(header or "").strip().lower(): str(header or "") for header in reader.fieldnames}
-    normalized_headers = {key: aliases.get(key) for key in column_map}
-    if "name" not in normalized_headers.values():
-        return render(request, "vendor_import.html", status_code=400, current_user=ctx["user"],
-                      current_company=ctx["company"], error="O CSV tem de conter uma coluna 'name' ou 'nome'.")
     existing_nifs = {
-        v.nif for v in db.scalars(select(Subcontractor).where(
+        vendor.nif for vendor in db.scalars(select(Subcontractor).where(
             Subcontractor.company_id == ctx["company"].id, Subcontractor.nif != ""
         ))
     }
-    seen_nifs = set()
-    rows = []
-    for line_number, raw in enumerate(reader, start=2):
-        if line_number > 502:
-            return render(request, "vendor_import.html", status_code=413, current_user=ctx["user"],
-                          current_company=ctx["company"], error="O CSV pode conter no máximo 500 linhas de dados.")
-        normalized = {}
-        for header, value in (raw or {}).items():
-            alias = aliases.get(str(header or "").strip().lower())
-            if alias:
-                normalized[alias] = str(value or "").strip()
-        row = {
-            "line": line_number,
-            "name": normalized.get("name", "")[:180],
-            "nif": normalize_nif(normalized.get("nif", "")),
-            "email": normalized.get("email", "").lower()[:320],
-            "phone": normalized.get("phone", "")[:40],
-            "iban": normalize_iban(normalized.get("iban", "")),
-            "notes": normalized.get("notes", "")[:2000],
-            "valid": True,
-            "errors": [],
-        }
-        if not row["name"]:
-            row["errors"].append("Nome em falta.")
-        if row["nif"] and not validate_portuguese_nif(row["nif"]):
-            row["errors"].append("NIF inválido.")
-        if row["iban"] and not validate_iban(row["iban"]):
-            row["errors"].append("IBAN inválido.")
-        if row["email"] and "@" not in row["email"]:
-            row["errors"].append("Email inválido.")
-        if row["nif"] and row["nif"] in existing_nifs:
-            row["errors"].append("NIF já registado nesta empresa.")
-        if row["nif"] and row["nif"] in seen_nifs:
-            row["errors"].append("NIF duplicado neste ficheiro.")
-        if row["nif"]:
-            seen_nifs.add(row["nif"])
-        row["valid"] = not row["errors"]
-        rows.append(row)
-    if not rows:
+    try:
+        rows = parse_subcontractor_csv(content, existing_nifs)
+    except VendorCSVError as exc:
         return render(request, "vendor_import.html", status_code=400, current_user=ctx["user"],
-                      current_company=ctx["company"], error="O CSV não contém linhas de dados.")
+                      current_company=ctx["company"], error=str(exc))
     batch = VendorImportBatch(
         company_id=ctx["company"].id,
         created_by_id=ctx["user"].id,
