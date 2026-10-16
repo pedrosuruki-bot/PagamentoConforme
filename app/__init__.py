@@ -1,0 +1,1 @@
+"""PagamentoConforme application package."""

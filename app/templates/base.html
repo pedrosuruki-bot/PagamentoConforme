@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>{% block title %}PagamentoConforme{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="/"><span class="brand-mark">P.</span><span>PagamentoConforme<small>Controlo documental</small></span></a>
+    <nav class="nav" aria-label="Navegação principal">
+    {% if current_user %}
+      <span class="muted">{{ current_company.name if current_company else current_user.email }}</span>
+      <a href="/dashboard">Painel</a><a href="/vendors">Subempreiteiros</a><a href="/invoices">Faturas</a><a href="/batches">Lotes SEPA</a><a href="/settings/company">Empresa</a><a href="/billing">Subscrição</a>
+      <form method="post" action="/logout" style="display:inline"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="btn secondary small-btn" type="submit">Sair</button></form>
+    {% else %}
+      <a href="/login">Entrar</a><a class="btn" href="/signup">Criar conta</a>
+    {% endif %}
+    </nav>
+  </div>
+</header>
+{% block body %}{% endblock %}
+<footer class="footer"><div class="wrap">PagamentoConforme · Organização documental para decisões mais informadas. <span style="float:right">Não executa transferências bancárias.</span></div></footer>
+</body>
+</html>
