@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Pré-visualização CSV — PagamentoConforme{% endblock %}
+{% block body %}
+<main class="wrap layout">
+  <aside class="sidebar">
+    <p class="sidebar-label">Área de trabalho</p>
+    <a class="side-link" href="/dashboard">Visão geral</a>
+    <a class="side-link active" href="/vendors">Subempreiteiros</a>
+    <a class="side-link" href="/invoices">Faturas</a>
+    <a class="side-link" href="/batches">Lotes SEPA</a>
+    <a class="side-link" href="/settings/company">Empresa</a>
+  </aside>
+  <section class="main">
+    <div class="pagehead">
+      <div><p class="eyebrow">REVISÃO ANTES DE IMPORTAR</p><h1>Pré-visualização do CSV</h1><p class="muted">Esta etapa ainda não criou fornecedores.</p></div>
+      <a class="btn secondary" href="/vendors/import">Recomeçar</a>
+    </div>
+    <div class="stats">
+      <div class="stat"><label>Linhas lidas</label><strong>{{ rows|length }}</strong><span>Inclui linhas inválidas</span></div>
+      <div class="stat"><label>Válidas</label><strong>{{ valid_count }}</strong><span>Prontas para importar</span></div>
+      <div class="stat"><label>Com erros</label><strong>{{ invalid_count }}</strong><span>Serão ignoradas</span></div>
+      <div class="stat"><label>Expira às</label><strong style="font-size:18px">{{ batch.expires_at.strftime("%H:%M") }}</strong><span>Pré-visualização temporária</span></div>
+    </div>
+    <div class="card">
+      <h2>Linhas analisadas</h2>
+      <p class="notice-text">Revise nomes, NIF, IBAN e contactos. Apenas linhas válidas serão importadas após confirmação explícita.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Linha</th><th>Fornecedor</th><th>NIF</th><th>Email</th><th>IBAN</th><th>Resultado</th></tr></thead>
+        <tbody>
+        {% for row in rows %}
+          <tr>
+            <td>{{ row.line }}</td><td>{{ row.name or "—" }}</td><td>{{ row.nif or "—" }}</td><td>{{ row.email or "—" }}</td><td>{{ row.iban or "—" }}</td>
+            <td>{% if row.valid %}<span class="status ok">Válida</span>{% else %}<span class="status bad">Erro</span><ul>{% for err in row.errors %}<li>{{ err }}</li>{% endfor %}</ul>{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+    </div>
+    <div class="card">
+      <h2>2. Confirmar importação</h2>
+      {% if valid_count %}
+        <p>Serão adicionados <strong>{{ valid_count }}</strong> fornecedores. As linhas inválidas serão ignoradas. Confirme apenas depois de rever os erros acima.</p>
+        <form method="post" action="/vendors/import/{{ batch.id }}/confirm">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <label class="check-row"><input type="checkbox" required> Confirmei a pré-visualização e quero importar as linhas válidas.</label>
+          <div class="button-row"><button class="btn" type="submit">Confirmar importação</button><a class="btn secondary" href="/vendors/import">Cancelar</a></div>
+        </form>
+      {% else %}
+        <div class="alert error">Não existem linhas válidas. Corrija o CSV e carregue-o novamente.</div>
+        <a class="btn secondary" href="/vendors/import">Carregar outro ficheiro</a>
+      {% endif %}
+    </div>
+  </section>
+</main>
+{% endblock %}

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Importar fornecedores — PagamentoConforme{% endblock %}
+{% block body %}
+<main class="wrap layout">
+  <aside class="sidebar">
+    <p class="sidebar-label">Área de trabalho</p>
+    <a class="side-link" href="/dashboard">Visão geral</a>
+    <a class="side-link active" href="/vendors">Subempreiteiros</a>
+    <a class="side-link" href="/invoices">Faturas</a>
+    <a class="side-link" href="/batches">Lotes SEPA</a>
+    <a class="side-link" href="/settings/company">Empresa</a>
+  </aside>
+  <section class="main">
+    <div class="pagehead">
+      <div><p class="eyebrow">IMPORTAÇÃO EM LOTE</p><h1>Importar subempreiteiros</h1><p class="muted">Valide o CSV e reveja cada linha antes de criar registos.</p></div>
+      <a class="btn secondary" href="/vendors">Cancelar</a>
+    </div>
+    {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+    <div class="card">
+      <h2>1. Carregar CSV</h2>
+      <p>Colunas aceites: <strong>name</strong> ou <strong>nome</strong> (obrigatória), <strong>nif</strong>, <strong>email</strong>, <strong>phone</strong> ou <strong>telefone</strong>, <strong>iban</strong> e <strong>notes</strong> ou <strong>notas</strong>.</p>
+      <p class="notice-text">UTF-8, máximo 1 MB e 500 linhas de dados. A importação não cria fornecedores antes da confirmação.</p>
+      <form method="post" action="/vendors/import/preview" enctype="multipart/form-data">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <div class="field"><label for="file">Ficheiro CSV</label><input type="file" id="file" name="file" accept=".csv,text/csv" required></div>
+        <div class="button-row"><button class="btn" type="submit">Validar e pré-visualizar</button><a class="btn secondary" href="/vendors">Voltar</a></div>
+      </form>
+    </div>
+    <div class="card"><h2>Formato esperado</h2><pre class="code">name,nif,email,phone,iban,notes
+Fornecedor Exemplo,501964843,financeiro@exemplo.pt,,PT50000201231234567890154,Fornecedor de teste</pre><p class="notice-text">O NIF e o IBAN passam por validações de formato. Isso não comprova a sua existência ou titularidade.</p></div>
+  </section>
+</main>
+{% endblock %}

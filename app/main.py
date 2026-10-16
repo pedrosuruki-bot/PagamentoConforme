@@ -1,4 +1,6 @@
+import csv
 import hashlib
+import io
 import json
 import logging
 import secrets
@@ -21,7 +23,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
 from app.db import Base, SessionLocal, engine, get_db
-from app.models import AuditLog, Company, Document, Invoice, Membership, PaymentBatch, PaymentBatchItem, SubmissionLink, Subcontractor, Subscription, User, WebhookEvent
+from app.models import AuditLog, Company, Document, Invoice, Membership, PaymentBatch, PaymentBatchItem, SubmissionLink, Subcontractor, Subscription, User, WebhookEvent, VendorImportBatch
 from app.security import csrf_token, hash_password, make_submission_token, read_submission_token, token_hash, verify_csrf, verify_password
 from app.services.documents import detect_file_type, extract_pdf_text, suggest_invoice_fields
 from app.services.sepa import build_pain001, validate_draft_xml
@@ -470,6 +472,168 @@ def vendors(request: Request, q: str = "", db: Session = Depends(get_db)):
         query = query.where((Subcontractor.name.ilike(term)) | (Subcontractor.nif.ilike(term)))
     rows = list(db.scalars(query.order_by(Subcontractor.name).limit(200)))
     return render(request, "vendors.html", current_user=ctx["user"], current_company=ctx["company"], vendors=rows, q=q)
+
+
+@app.get("/vendors/import", response_class=HTMLResponse)
+def vendor_import_page(request: Request, db: Session = Depends(get_db)):
+    ctx = current_context(request, db)
+    if not ctx:
+        return RedirectResponse("/login", status_code=303)
+    require_roles(ctx, {"owner", "admin", "finance"})
+    return render(request, "vendor_import.html", current_user=ctx["user"],
+                  current_company=ctx["company"])
+
+
+@app.post("/vendors/import/preview", response_class=HTMLResponse)
+def vendor_import_preview(request: Request, file: UploadFile = File(...),
+                          csrf: str = Form(...), db: Session = Depends(get_db)):
+    check_csrf_or_400(request, csrf)
+    ctx = current_context(request, db)
+    if not ctx:
+        return RedirectResponse("/login", status_code=303)
+    require_roles(ctx, {"owner", "admin", "finance"})
+    if file.filename and not file.filename.lower().endswith(".csv"):
+        return render(request, "vendor_import.html", status_code=400, current_user=ctx["user"],
+                      current_company=ctx["company"], error="Envie um ficheiro com extensão .csv.")
+    content = file.file.read(1_000_001)
+    if not content:
+        return render(request, "vendor_import.html", status_code=400, current_user=ctx["user"],
+                      current_company=ctx["company"], error="O ficheiro está vazio.")
+    if len(content) > 1_000_000:
+        return render(request, "vendor_import.html", status_code=413, current_user=ctx["user"],
+                      current_company=ctx["company"], error="O ficheiro excede o limite de 1 MB.")
+    try:
+        csv_text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return render(request, "vendor_import.html", status_code=400, current_user=ctx["user"],
+                      current_company=ctx["company"], error="O CSV tem de estar codificado em UTF-8.")
+    reader = csv.DictReader(io.StringIO(csv_text))
+    if not reader.fieldnames:
+        return render(request, "vendor_import.html", status_code=400, current_user=ctx["user"],
+                      current_company=ctx["company"], error="Não foram encontrados cabeçalhos no CSV.")
+    aliases = {
+        "name": "name", "nome": "name", "empresa": "name", "denominacao_social": "name",
+        "nif": "nif", "vat": "nif", "email": "email", "e-mail": "email",
+        "phone": "phone", "telefone": "phone", "telemovel": "phone",
+        "iban": "iban", "notes": "notes", "notas": "notes",
+    }
+    column_map = {str(header or "").strip().lower(): str(header or "") for header in reader.fieldnames}
+    normalized_headers = {key: aliases.get(key) for key in column_map}
+    if "name" not in normalized_headers.values():
+        return render(request, "vendor_import.html", status_code=400, current_user=ctx["user"],
+                      current_company=ctx["company"], error="O CSV tem de conter uma coluna 'name' ou 'nome'.")
+    existing_nifs = {
+        v.nif for v in db.scalars(select(Subcontractor).where(
+            Subcontractor.company_id == ctx["company"].id, Subcontractor.nif != ""
+        ))
+    }
+    seen_nifs = set()
+    rows = []
+    for line_number, raw in enumerate(reader, start=2):
+        if line_number > 502:
+            return render(request, "vendor_import.html", status_code=413, current_user=ctx["user"],
+                          current_company=ctx["company"], error="O CSV pode conter no máximo 500 linhas de dados.")
+        normalized = {}
+        for header, value in (raw or {}).items():
+            alias = aliases.get(str(header or "").strip().lower())
+            if alias:
+                normalized[alias] = str(value or "").strip()
+        row = {
+            "line": line_number,
+            "name": normalized.get("name", "")[:180],
+            "nif": normalize_nif(normalized.get("nif", "")),
+            "email": normalized.get("email", "").lower()[:320],
+            "phone": normalized.get("phone", "")[:40],
+            "iban": normalize_iban(normalized.get("iban", "")),
+            "notes": normalized.get("notes", "")[:2000],
+            "valid": True,
+            "errors": [],
+        }
+        if not row["name"]:
+            row["errors"].append("Nome em falta.")
+        if row["nif"] and not validate_portuguese_nif(row["nif"]):
+            row["errors"].append("NIF inválido.")
+        if row["iban"] and not validate_iban(row["iban"]):
+            row["errors"].append("IBAN inválido.")
+        if row["email"] and "@" not in row["email"]:
+            row["errors"].append("Email inválido.")
+        if row["nif"] and row["nif"] in existing_nifs:
+            row["errors"].append("NIF já registado nesta empresa.")
+        if row["nif"] and row["nif"] in seen_nifs:
+            row["errors"].append("NIF duplicado neste ficheiro.")
+        if row["nif"]:
+            seen_nifs.add(row["nif"])
+        row["valid"] = not row["errors"]
+        rows.append(row)
+    if not rows:
+        return render(request, "vendor_import.html", status_code=400, current_user=ctx["user"],
+                      current_company=ctx["company"], error="O CSV não contém linhas de dados.")
+    batch = VendorImportBatch(
+        company_id=ctx["company"].id,
+        created_by_id=ctx["user"].id,
+        rows=rows,
+        status="staged",
+        expires_at=datetime.utcnow() + timedelta(minutes=30),
+    )
+    db.add(batch)
+    db.commit()
+    return RedirectResponse(f"/vendors/import/{batch.id}/preview", status_code=303)
+
+
+@app.get("/vendors/import/{batch_id}/preview", response_class=HTMLResponse)
+def vendor_import_preview_page(request: Request, batch_id: int, db: Session = Depends(get_db)):
+    ctx = current_context(request, db)
+    if not ctx:
+        return RedirectResponse("/login", status_code=303)
+    require_roles(ctx, {"owner", "admin", "finance"})
+    batch = db.scalar(select(VendorImportBatch).where(
+        VendorImportBatch.id == batch_id,
+        VendorImportBatch.company_id == ctx["company"].id,
+        VendorImportBatch.created_by_id == ctx["user"].id,
+    ))
+    if not batch or batch.status != "staged" or batch.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=410, detail="A pré-visualização expirou ou já foi utilizada.")
+    valid_count = sum(1 for row in batch.rows if row.get("valid"))
+    invalid_count = len(batch.rows) - valid_count
+    return render(request, "vendor_import_preview.html", current_user=ctx["user"],
+                  current_company=ctx["company"], batch=batch, rows=batch.rows,
+                  valid_count=valid_count, invalid_count=invalid_count)
+
+
+@app.post("/vendors/import/{batch_id}/confirm")
+def vendor_import_confirm(request: Request, batch_id: int, csrf: str = Form(...),
+                          db: Session = Depends(get_db)):
+    check_csrf_or_400(request, csrf)
+    ctx = current_context(request, db)
+    if not ctx:
+        return RedirectResponse("/login", status_code=303)
+    require_roles(ctx, {"owner", "admin", "finance"})
+    batch = db.scalar(select(VendorImportBatch).where(
+        VendorImportBatch.id == batch_id,
+        VendorImportBatch.company_id == ctx["company"].id,
+        VendorImportBatch.created_by_id == ctx["user"].id,
+    ))
+    if not batch or batch.status != "staged" or batch.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=410, detail="A pré-visualização expirou ou já foi utilizada.")
+    valid_rows = [row for row in batch.rows if row.get("valid")]
+    if not valid_rows:
+        raise HTTPException(status_code=409, detail="Não existem linhas válidas para importar.")
+    imported = 0
+    for row in valid_rows:
+        db.add(Subcontractor(
+            company_id=ctx["company"].id, name=row["name"], nif=row["nif"],
+            email=row["email"], phone=row["phone"], iban=row["iban"], notes=row["notes"],
+        ))
+        imported += 1
+    batch.status = "imported"
+    audit(db, ctx["company"].id, ctx["user"].id, "subcontractor.csv_imported", "vendor_import_batch",
+          batch.id, {"imported": imported, "skipped": len(batch.rows) - imported})
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Os dados mudaram desde a pré-visualização. Gere uma nova pré-visualização.")
+    return RedirectResponse(f"/vendors?imported={imported}&skipped={len(batch.rows) - imported}", status_code=303)
 
 
 @app.get("/vendors/new", response_class=HTMLResponse)
