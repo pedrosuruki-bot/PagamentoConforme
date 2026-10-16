@@ -860,6 +860,73 @@ def invoice_detail(request: Request, invoice_id: int, db: Session = Depends(get_
     return render(request, "invoice_detail.html", current_user=ctx["user"], current_company=ctx["company"], invoice=invoice, vendor=vendor, document=document, related_docs=related_docs)
 
 
+@app.post("/invoices/{invoice_id}/edit", response_class=HTMLResponse)
+def edit_invoice(request: Request, invoice_id: int, number: str = Form(...),
+                 issue_date: str = Form(""), total_amount: str = Form(...),
+                 correction_reason: str = Form(...), csrf: str = Form(...),
+                 db: Session = Depends(get_db)):
+    check_csrf_or_400(request, csrf)
+    ctx = current_context(request, db)
+    if not ctx:
+        return RedirectResponse("/login", status_code=303)
+    require_roles(ctx, {"owner", "admin", "finance"})
+    invoice = get_owned_invoice(db, ctx["company"].id, invoice_id)
+    if invoice.status in {"batched", "paid", "cancelled"}:
+        raise HTTPException(status_code=409, detail="Esta fatura já foi incluída num lote ou encerrada. Não pode ser editada.")
+    number = number.strip()
+    reason = correction_reason.strip()
+    if not number or len(number) > 100:
+        raise HTTPException(status_code=400, detail="O número da fatura é obrigatório e deve ter até 100 caracteres.")
+    if not reason or len(reason) < 5:
+        raise HTTPException(status_code=400, detail="Indique o motivo da correção.")
+    try:
+        amount = Decimal(total_amount.strip().replace(",", "."))
+    except (InvalidOperation, AttributeError):
+        raise HTTPException(status_code=400, detail="O valor da fatura não é válido.")
+    if not amount.is_finite() or amount <= 0 or amount >= Decimal("10000000000") or amount.as_tuple().exponent < -2:
+        raise HTTPException(status_code=400, detail="O valor deve ser positivo e conter, no máximo, duas casas decimais.")
+    parsed_date = None
+    if issue_date.strip():
+        try:
+            parsed_date = date.fromisoformat(issue_date.strip())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="A data da fatura é inválida.")
+
+    previous = {
+        "number": invoice.number,
+        "issue_date": invoice.issue_date.isoformat() if invoice.issue_date else None,
+        "total_amount": str(invoice.total_amount),
+        "status": invoice.status,
+    }
+    invoice.number = number
+    invoice.issue_date = parsed_date
+    invoice.total_amount = amount
+    invoice.status = "review_required"
+    invoice.approved_by_id = None
+    invoice.approved_at = None
+    invoice.review_notes = f"Correção manual: {reason}"
+    audit(
+        db, ctx["company"].id, ctx["user"].id, "invoice.corrected",
+        "invoice", invoice.id,
+        {
+            "reason": reason[:500],
+            "previous": previous,
+            "new": {
+                "number": number,
+                "issue_date": parsed_date.isoformat() if parsed_date else None,
+                "total_amount": f"{amount:.2f}",
+                "status": "review_required",
+            },
+        },
+    )
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Já existe uma fatura com este número para o mesmo subempreiteiro.")
+    return RedirectResponse(f"/invoices/{invoice_id}?success=corrected", status_code=303)
+
+
 @app.post("/invoices/{invoice_id}/approve")
 def approve_invoice(request: Request, invoice_id: int, csrf: str = Form(...), review_notes: str = Form(""), db: Session = Depends(get_db)):
     check_csrf_or_400(request, csrf)
