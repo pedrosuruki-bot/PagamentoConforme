@@ -2,7 +2,7 @@
 
 O sistema permite carregar certidões da AT, Segurança Social, seguros, outros documentos e faturas em PDF, PNG ou JPEG. Extrai texto de PDFs, tenta ler QR das faturas com zxing-cpp e produz sugestões estruturadas dos campos A, B, C, D, E, F, G, H, I*, N, O, Q, R e S quando presentes. As sugestões são armazenadas com o documento para revisão humana.
 
-A leitura de texto não prova autenticidade, validade legal nem situação fiscal oficial. Os estados de documento são auxiliares e carecem de revisão humana.
+A leitura de texto ou QR não prova autenticidade, validade legal nem situação fiscal oficial. Um utilizador autorizado pode registar uma revisão manual, um estado de rejeição, notas e a data de validade indicada no documento. O registo de revisão é auditado e não equivale a certificação oficial.
 
 ## Próximos incrementos
 

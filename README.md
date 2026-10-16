@@ -10,6 +10,7 @@ SaaS B2B para organizar documentos de subempreiteiros, rever faturas e preparar 
 - Upload de PDF, PNG e JPEG com validação de tipo real e limite de tamanho.
 - Armazenamento privado local em desenvolvimento ou Supabase Storage quando configurado.
 - Extração de texto PDF com PyMuPDF, leitura assistida de QR em faturas e sugestões de campos; os resultados não são tratados como validação oficial.
+- Revisão documental manual com notas, estado, validade declarada e registo de auditoria.
 - Revisão e aprovação humana de faturas.
 - Geração de rascunho XML SEPA, com validação local básica.
 - Checkout de subscrição Stripe opcional e tratamento inicial de webhooks.

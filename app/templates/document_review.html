@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Rever documento — PagamentoConforme{% endblock %}
+{% block body %}
+<main class="wrap layout">
+  <aside class="sidebar">
+    <p class="sidebar-label">Área de trabalho</p>
+    <a class="side-link" href="/dashboard">Visão geral</a>
+    <a class="side-link" href="/vendors">Subempreiteiros</a>
+    <a class="side-link" href="/invoices">Faturas</a>
+    <a class="side-link" href="/batches">Lotes SEPA</a>
+    <a class="side-link" href="/settings/company">Empresa</a>
+  </aside>
+  <section class="main">
+    <div class="pagehead">
+      <div><p class="eyebrow">REVISÃO DOCUMENTAL</p><h1>{{ document.upload_name }}</h1><p class="muted">{{ vendor.name }} · {{ document.kind }}</p></div>
+      <a class="btn secondary" href="/vendors/{{ vendor.id }}">Voltar ao subempreiteiro</a>
+    </div>
+    {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+    {% if request.query_params.get("saved") %}<div class="alert">Revisão guardada e registada no histórico.</div>{% endif %}
+    <div class="card">
+      <p class="notice-text">Registe o que verificou no documento original. Este estado é uma decisão administrativa interna, não confirma autenticidade oficial nem a situação fiscal do fornecedor.</p>
+      <dl class="detail-list">
+        <dt>Ficheiro</dt><dd><a href="/documents/{{ document.id }}/download">{{ document.upload_name }}</a></dd>
+        <dt>Estado de processamento</dt><dd>{{ document.status }}</dd>
+        <dt>Data de upload</dt><dd>{{ document.created_at.strftime("%d/%m/%Y %H:%M") }}</dd>
+        <dt>Validade registada</dt><dd>{{ document.expires_on.strftime("%d/%m/%Y") if document.expires_on else "Não indicada" }}</dd>
+        <dt>SHA-256</dt><dd class="code">{{ document.sha256 }}</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <h2>Resultado da revisão humana</h2>
+      <form method="post" action="/documents/{{ document.id }}/review">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <div class="field">
+          <label for="review_status">Estado de revisão *</label>
+          <select id="review_status" name="review_status" required>
+            <option value="review_required" {% if document.status == 'review_required' %}selected{% endif %}>Revisão necessária</option>
+            <option value="reviewed_by_human" {% if document.status == 'reviewed_by_human' %}selected{% endif %}>Revisão humana registada</option>
+            <option value="invalid" {% if document.status == 'invalid' %}selected{% endif %}>Documento rejeitado</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="expires_on">Data de validade indicada no documento</label>
+          <input id="expires_on" name="expires_on" type="date" value="{{ document.expires_on.strftime('%Y-%m-%d') if document.expires_on else '' }}">
+          <span class="hint">Se o documento não tiver uma data clara, deixe em branco. A validade desconhecida será sinalizada.</span>
+        </div>
+        <div class="field">
+          <label for="review_notes">Notas / motivo da decisão *</label>
+          <textarea id="review_notes" name="review_notes" required minlength="5" maxlength="2000">{{ document.review_notes }}</textarea>
+        </div>
+        <div class="button-row">
+          <button class="btn" type="submit">Guardar revisão</button>
+          <a class="btn secondary" href="/vendors/{{ vendor.id }}">Cancelar</a>
+        </div>
+      </form>
+    </div>
+  </section>
+</main>
+{% endblock %}

@@ -5,7 +5,7 @@
 - A recuperação de palavra-passe usa ligação assinada e email; é necessária validação de ponta a ponta com o fornecedor de email em produção.
 - A gestão completa de convites de equipa e delegação administrativa ainda não está implementada na interface.
 - Ainda não existe rate limiting distribuído dedicado em todos os endpoints públicos.
-- A leitura de texto e QR não valida autenticidade oficial nem consulta AT/Segurança Social.
+- A leitura de texto e QR não valida autenticidade oficial nem consulta AT/Segurança Social; os estados de revisão documental continuam a ser uma avaliação interna do utilizador.
 - Imagens são aceites e o leitor de QR tenta descodificá-las, mas ainda não existe OCR completo para texto de imagens digitalizadas.
 - A importação CSV tem pré-visualização e validação básica por linha; falta uma suite dedicada de testes de abuso, grandes ficheiros e concorrência.
 - Não existe validação XML completa contra XSD de banco nem teste de aceitação em bancos portugueses.

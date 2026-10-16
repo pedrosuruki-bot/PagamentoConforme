@@ -422,7 +422,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     cid = ctx["company"].id
     today = lisbon_today()
     company_documents = list(db.scalars(select(Document).where(Document.company_id == cid)))
-    expiry_states = [document_expiry_state(doc.expires_on, today)["state"] for doc in company_documents]
+    expiry_states = [document_expiry_state(doc.expires_on, today, doc.status)["state"] for doc in company_documents]
     totals = {
         "vendors": db.scalar(select(func.count()).select_from(Subcontractor).where(Subcontractor.company_id == cid, Subcontractor.active.is_(True))) or 0,
         "invoices": db.scalar(select(func.count()).select_from(Invoice).where(Invoice.company_id == cid)) or 0,
@@ -978,6 +978,68 @@ def update_invoice_status(request: Request, invoice_id: int, status: str = Form(
     audit(db, ctx["company"].id, ctx["user"].id, "invoice.status_changed", "invoice", invoice.id, {"status": status})
     db.commit()
     return RedirectResponse(f"/invoices/{invoice.id}", status_code=303)
+
+
+@app.get("/documents/{document_id}/review", response_class=HTMLResponse)
+def document_review_page(request: Request, document_id: int, db: Session = Depends(get_db)):
+    ctx = current_context(request, db)
+    if not ctx:
+        return RedirectResponse("/login", status_code=303)
+    require_roles(ctx, {"owner", "admin", "finance"})
+    document = db.scalar(select(Document).where(
+        Document.id == document_id, Document.company_id == ctx["company"].id
+    ))
+    if not document:
+        raise HTTPException(status_code=404, detail="Documento não encontrado.")
+    vendor = get_owned_vendor(db, ctx["company"].id, document.subcontractor_id)
+    return render(request, "document_review.html", current_user=ctx["user"],
+                  current_company=ctx["company"], document=document, vendor=vendor)
+
+
+@app.post("/documents/{document_id}/review", response_class=HTMLResponse)
+def document_review_save(request: Request, document_id: int, review_status: str = Form(...),
+                         expires_on: str = Form(""), review_notes: str = Form(...),
+                         csrf: str = Form(...), db: Session = Depends(get_db)):
+    check_csrf_or_400(request, csrf)
+    ctx = current_context(request, db)
+    if not ctx:
+        return RedirectResponse("/login", status_code=303)
+    require_roles(ctx, {"owner", "admin", "finance"})
+    document = db.scalar(select(Document).where(
+        Document.id == document_id, Document.company_id == ctx["company"].id
+    ))
+    if not document:
+        raise HTTPException(status_code=404, detail="Documento não encontrado.")
+    if review_status not in {"review_required", "reviewed_by_human", "invalid"}:
+        raise HTTPException(status_code=400, detail="Estado de revisão inválido.")
+    reason = review_notes.strip()
+    if len(reason) < 5 or len(reason) > 2000:
+        raise HTTPException(status_code=400, detail="Registe uma nota de revisão com 5 a 2000 caracteres.")
+    expiry_date = None
+    if expires_on.strip():
+        try:
+            expiry_date = date.fromisoformat(expires_on.strip())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="A data de validade é inválida.")
+    previous = {
+        "status": document.status,
+        "expires_on": document.expires_on.date().isoformat() if document.expires_on else None,
+    }
+    document.status = review_status
+    document.reviewed_by_id = ctx["user"].id
+    document.reviewed_at = datetime.utcnow()
+    document.review_notes = reason
+    document.expires_on = datetime.combine(expiry_date, datetime.min.time()) if expiry_date else None
+    audit(
+        db, ctx["company"].id, ctx["user"].id, "document.reviewed", "document", document.id,
+        {
+            "previous": previous,
+            "new": {"status": review_status, "expires_on": expiry_date.isoformat() if expiry_date else None},
+            "reason": reason[:500],
+        },
+    )
+    db.commit()
+    return RedirectResponse(f"/documents/{document_id}/review?saved=1", status_code=303)
 
 
 @app.get("/documents/{document_id}/download")
