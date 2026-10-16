@@ -55,9 +55,8 @@ def build_pain001(*, message_id: str, company_name: str, debtor_iban: str,
     _el(pmt, "NbOfTxs", len(cleaned))
     _el(pmt, "CtrlSum", f"{total:.2f}")
     pmt_type = _el(pmt, "PmtTpInf")
-    _el(pmt_type, "SvcLvl")
-    pmt.find(f"{{{NS}}}PmtTpInf").find(f"{{{NS}}}SvcLvl").append(Element(f"{{{NS}}}Cd"))
-    pmt.find(f"{{{NS}}}PmtTpInf").find(f"{{{NS}}}SvcLvl").find(f"{{{NS}}}Cd").text = "SEPA"
+    service_level = _el(pmt_type, "SvcLvl")
+    _el(service_level, "Cd", "SEPA")
     _el(pmt, "ReqdExctnDt", execution_date.isoformat())
     debtor = _el(pmt, "Dbtr")
     _el(debtor, "Nm", company_name[:140])
