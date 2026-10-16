@@ -75,7 +75,7 @@ def test_viewer_cannot_create_vendor_and_csrf_is_required():
         assert response.status_code == 403
 
         # A write request without the CSRF token must fail before changing data.
-        response = client.post("/vendors/new", data={"name": "Sem CSRF"}, follow_redirects=False)
+        response = client.post("/vendors/new", data={"name": "Sem CSRF", "csrf": ""}, follow_redirects=False)
         assert response.status_code == 400
 
         db = SessionLocal()
