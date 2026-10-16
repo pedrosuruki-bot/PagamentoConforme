@@ -3,7 +3,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 
-import fitz
+import pymupdf as fitz
 
 
 def extract_pdf_text(content: bytes, max_chars: int = 60000) -> tuple[str, str]:

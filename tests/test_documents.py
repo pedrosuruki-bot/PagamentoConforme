@@ -1,4 +1,4 @@
-import fitz
+import pymupdf as fitz
 from app.services.documents import detect_file_type, extract_pdf_text, suggest_invoice_fields
 
 
