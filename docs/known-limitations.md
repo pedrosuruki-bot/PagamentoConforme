@@ -10,6 +10,6 @@
 - A importação CSV tem pré-visualização e validação básica por linha; falta uma suite dedicada de testes de abuso, grandes ficheiros e concorrência.
 - Não existe validação XML completa contra XSD de banco nem teste de aceitação em bancos portugueses.
 - Stripe necessita de credenciais reais em modo de teste, configuração de produto/preço e testes completos de ponta a ponta.
-- As tarefas programadas de avisos documentais e emails recorrentes ainda não estão implementadas como worker robusto.
+- Existe um worker de alertas de validade idempotente, mas ainda precisa de ser configurado num agendador externo diário; não está agendado automaticamente.
 - A política legal e os contratos de tratamento de dados carecem de revisão profissional.
 - O produto não está considerado pronto para produção até existir deploy, configuração externa, revisão de segurança e testes end-to-end documentados.

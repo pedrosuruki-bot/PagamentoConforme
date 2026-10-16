@@ -14,6 +14,7 @@ SaaS B2B para organizar documentos de subempreiteiros, rever faturas e preparar 
 - Geração de rascunho XML SEPA, com validação local básica.
 - Checkout de subscrição Stripe opcional e tratamento inicial de webhooks.
 - Auditoria de ações relevantes.
+- Alertas de validade por email através de um worker executável sob agendamento externo.
 - Migrações Alembic e testes unitários.
 
 ## Executar localmente
@@ -30,6 +31,8 @@ No modo local, a ligação de confirmação de email aparece nos logs do termina
 ## Testes
 
 Executar pytest.
+
+O worker de alertas pode ser executado manualmente com `python scripts/send_document_reminders.py`, depois de configurar o armazenamento e o serviço de email. Para alertas recorrentes, configure um agendador diário externo; não está ativo automaticamente.
 
 ## Produção
 
