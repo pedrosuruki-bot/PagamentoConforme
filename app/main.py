@@ -511,6 +511,71 @@ def vendor_new(request: Request, name: str = Form(...), nif: str = Form(""),
     return RedirectResponse(f"/vendors/{vendor.id}", status_code=303)
 
 
+@app.get("/vendors/{vendor_id}/edit", response_class=HTMLResponse)
+def vendor_edit_page(request: Request, vendor_id: int, db: Session = Depends(get_db)):
+    ctx = current_context(request, db)
+    if not ctx:
+        return RedirectResponse("/login", status_code=303)
+    require_roles(ctx, {"owner", "admin", "finance"})
+    vendor = get_owned_vendor(db, ctx["company"].id, vendor_id)
+    return render(request, "vendor_edit.html", current_user=ctx["user"],
+                  current_company=ctx["company"], vendor=vendor)
+
+
+@app.post("/vendors/{vendor_id}/edit", response_class=HTMLResponse)
+def vendor_edit(request: Request, vendor_id: int, name: str = Form(...), nif: str = Form(""),
+                email: str = Form(""), phone: str = Form(""), iban: str = Form(""),
+                notes: str = Form(""), csrf: str = Form(...), db: Session = Depends(get_db)):
+    check_csrf_or_400(request, csrf)
+    ctx = current_context(request, db)
+    if not ctx:
+        return RedirectResponse("/login", status_code=303)
+    require_roles(ctx, {"owner", "admin", "finance"})
+    vendor = get_owned_vendor(db, ctx["company"].id, vendor_id)
+    name, nif, iban = name.strip(), normalize_nif(nif), normalize_iban(iban)
+    email = email.strip().lower()
+    error = None
+    if not name or len(name) > 180:
+        error = "Indique o nome do subempreiteiro."
+    elif nif and not validate_portuguese_nif(nif):
+        error = "O NIF não passou a validação de formato."
+    elif iban and not validate_iban(iban):
+        error = "O IBAN não passou a validação de formato."
+    elif email and "@" not in email:
+        error = "Indique um email válido."
+    if error:
+        vendor.name, vendor.nif, vendor.email, vendor.phone, vendor.iban, vendor.notes = name, nif, email, phone.strip(), iban, notes.strip()
+        return render(request, "vendor_edit.html", status_code=400, current_user=ctx["user"],
+                      current_company=ctx["company"], vendor=vendor, error=error)
+    vendor.name, vendor.nif, vendor.email = name, nif, email
+    vendor.phone, vendor.iban, vendor.notes = phone.strip(), iban, notes.strip()
+    audit(db, ctx["company"].id, ctx["user"].id, "subcontractor.updated", "subcontractor", vendor.id,
+          {"nif_set": bool(nif), "iban_set": bool(iban)})
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        vendor = get_owned_vendor(db, ctx["company"].id, vendor_id)
+        return render(request, "vendor_edit.html", status_code=409, current_user=ctx["user"],
+                      current_company=ctx["company"], vendor=vendor,
+                      error="Já existe outro subempreiteiro com esse NIF nesta empresa.")
+    return RedirectResponse(f"/vendors/{vendor.id}", status_code=303)
+
+
+@app.post("/vendors/{vendor_id}/archive")
+def vendor_archive(request: Request, vendor_id: int, csrf: str = Form(...), db: Session = Depends(get_db)):
+    check_csrf_or_400(request, csrf)
+    ctx = current_context(request, db)
+    if not ctx:
+        return RedirectResponse("/login", status_code=303)
+    require_roles(ctx, {"owner", "admin"})
+    vendor = get_owned_vendor(db, ctx["company"].id, vendor_id)
+    vendor.active = False
+    audit(db, ctx["company"].id, ctx["user"].id, "subcontractor.archived", "subcontractor", vendor.id)
+    db.commit()
+    return RedirectResponse(f"/vendors/{vendor.id}", status_code=303)
+
+
 @app.get("/vendors/{vendor_id}", response_class=HTMLResponse)
 def vendor_detail(request: Request, vendor_id: int, db: Session = Depends(get_db)):
     ctx = current_context(request, db)
