@@ -25,7 +25,7 @@ from app.config import get_settings
 from app.db import Base, SessionLocal, engine, get_db
 from app.models import AuditLog, Company, Document, Invoice, Membership, PaymentBatch, PaymentBatchItem, SubmissionLink, Subcontractor, Subscription, User, WebhookEvent, VendorImportBatch
 from app.security import csrf_token, hash_password, make_submission_token, read_submission_token, token_hash, verify_csrf, verify_password
-from app.services.documents import detect_file_type, extract_pdf_text, suggest_invoice_fields
+from app.services.documents import detect_file_type, extract_pdf_text, extract_portuguese_invoice_qr, suggest_invoice_fields
 from app.services.sepa import build_pain001, validate_draft_xml
 from app.storage import put_private_file, read_private_file
 from app.validators import normalize_iban, normalize_nif, safe_filename, validate_iban, validate_portuguese_nif
@@ -187,6 +187,10 @@ def create_document(db: Session, company_id: int, vendor: Subcontractor,
     original_name = safe_filename(file.filename or "document")
     key, digest = put_private_file(company_id, content, original_name, mime)
     text, extraction_status = extract_pdf_text(content) if mime == "application/pdf" else ("", "image_requires_review")
+    extracted_fields = {}
+    if kind == "invoice":
+        extracted_fields["invoice_suggestions"] = suggest_invoice_fields(text)
+        extracted_fields["qr"] = extract_portuguese_invoice_qr(content, mime)
     doc = Document(
         company_id=company_id,
         subcontractor_id=vendor.id,
@@ -197,6 +201,7 @@ def create_document(db: Session, company_id: int, vendor: Subcontractor,
         size_bytes=len(content),
         sha256=digest,
         extracted_text=text,
+        extracted_fields=extracted_fields,
         status=extraction_status if extraction_status != "text_extracted" else "review_required",
         expires_on=datetime.combine(expires_on, datetime.min.time()) if expires_on else None,
     )
@@ -847,24 +852,33 @@ def public_submission(request: Request, token: str, kind: str = Form(...),
         return render(request, "submission.html", status_code=400, token=token, vendor_name=vendor.name, error="A data de validade é inválida.")
     doc, text_value = create_document(db, link.company_id, vendor, kind, file, expiry)
     if kind == "invoice":
+        qr_data = doc.extracted_fields.get("qr", {}) if doc.extracted_fields else {}
+        qr_records = qr_data.get("records", []) if isinstance(qr_data, dict) else []
+        qr_record = qr_records[0] if qr_records else {}
+        invoice_number = number.strip() or str(qr_record.get("document_identifier") or "").strip()
+        amount_text = total_amount.strip() or str(qr_record.get("total_amount") or "").strip()
+        if not amount_text:
+            db.rollback()
+            return render(request, "submission.html", status_code=400, token=token, vendor_name=vendor.name, error="Indique o total da fatura. Não foi possível extraí-lo do QR.")
         try:
-            amount = Decimal(total_amount.replace(",", "."))
+            amount = Decimal(amount_text.replace(",", "."))
         except (InvalidOperation, AttributeError):
             db.rollback()
-            return render(request, "submission.html", status_code=400, token=token, vendor_name=vendor.name, error="Indique o valor total da fatura.")
-        if amount <= 0 or not number.strip():
+            return render(request, "submission.html", status_code=400, token=token, vendor_name=vendor.name, error="O total da fatura não é válido.")
+        if amount <= 0 or not invoice_number:
             db.rollback()
-            return render(request, "submission.html", status_code=400, token=token, vendor_name=vendor.name, error="Indique o número e o valor total da fatura.")
+            return render(request, "submission.html", status_code=400, token=token, vendor_name=vendor.name, error="Indique o número e o valor total da fatura se não puderem ser extraídos do QR.")
+        date_text = issue_date.strip() or str(qr_record.get("issue_date") or "")
         invoice_date = None
-        if issue_date:
+        if date_text:
             try:
-                invoice_date = date.fromisoformat(issue_date)
+                invoice_date = date.fromisoformat(date_text)
             except ValueError:
                 db.rollback()
                 return render(request, "submission.html", status_code=400, token=token, vendor_name=vendor.name, error="A data da fatura é inválida.")
         db.add(Invoice(company_id=link.company_id, subcontractor_id=vendor.id, document_id=doc.id,
-                       number=number.strip(), issue_date=invoice_date, total_amount=amount,
-                       status="review_required", review_notes="Submetida através de link público; requer revisão humana."))
+                       number=invoice_number, issue_date=invoice_date, total_amount=amount,
+                       status="review_required", review_notes="Submetida através de link público; dados e QR requerem revisão humana."))
     audit(db, link.company_id, None, "document.public_submission", "document", doc.id, {"kind": kind})
     try:
         db.commit()

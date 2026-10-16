@@ -21,8 +21,8 @@
 3. Criar um bucket privado no Supabase Storage e configurar as credenciais do servidor.
 4. Configurar email de verificação e validar os fluxos de entrega.
 5. Ativar HTTPS e confirmar SESSION_HTTPS_ONLY=true.
-6. Executar revisão de segurança independente, incluindo autorização multiempresa, CSRF, tratamento de ficheiros, webhooks e concorrência.
-7. Implementar rate limiting dedicado, proteção contra abuso, recuperação segura de palavra-passe, monitorização e política de resposta a incidentes.
+6. Executar revisão de segurança independente, incluindo autorização multiempresa, CSRF, tratamento de ficheiros, recuperação de palavra-passe, webhooks e concorrência.
+7. Implementar rate limiting distribuído, proteção contra abuso, monitorização e política de resposta a incidentes.
 8. Definir conservação, eliminação, backups e recuperação testada.
 9. Rever os documentos legais e contratos com subcontratantes de tratamento de dados.
 

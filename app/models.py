@@ -72,6 +72,7 @@ class Document(Base):
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     extracted_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    extracted_fields: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     status: Mapped[str] = mapped_column(String(40), default="review_required", nullable=False)
     expires_on: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
