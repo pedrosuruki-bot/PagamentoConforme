@@ -26,7 +26,7 @@ from app.security import csrf_token, hash_password, make_submission_token, read_
 from app.services.documents import detect_file_type, extract_pdf_text, extract_portuguese_invoice_qr, suggest_invoice_fields
 from app.services.sepa import build_pain001, validate_draft_xml
 from app.services.vendor_csv import VendorCSVError, parse_subcontractor_csv
-from app.storage import put_private_file, read_private_file
+from app.storage import delete_private_file, put_private_file, read_private_file
 from app.validators import normalize_iban, normalize_nif, safe_filename, validate_iban, validate_portuguese_nif
 
 logging.basicConfig(level=logging.INFO)
@@ -205,7 +205,12 @@ def create_document(db: Session, company_id: int, vendor: Subcontractor,
         expires_on=datetime.combine(expires_on, datetime.min.time()) if expires_on else None,
     )
     db.add(doc)
-    db.flush()
+    try:
+        db.flush()
+    except Exception:
+        db.rollback()
+        delete_private_file(key)
+        raise
     return doc, text
 
 
@@ -796,14 +801,17 @@ def public_submission(request: Request, token: str, kind: str = Form(...),
         amount_text = total_amount.strip() or str(qr_record.get("total_amount") or "").strip()
         if not amount_text:
             db.rollback()
+            delete_private_file(doc.storage_key)
             return render(request, "submission.html", status_code=400, token=token, vendor_name=vendor.name, error="Indique o total da fatura. Não foi possível extraí-lo do QR.")
         try:
             amount = Decimal(amount_text.replace(",", "."))
         except (InvalidOperation, AttributeError):
             db.rollback()
+            delete_private_file(doc.storage_key)
             return render(request, "submission.html", status_code=400, token=token, vendor_name=vendor.name, error="O total da fatura não é válido.")
         if amount <= 0 or not invoice_number:
             db.rollback()
+            delete_private_file(doc.storage_key)
             return render(request, "submission.html", status_code=400, token=token, vendor_name=vendor.name, error="Indique o número e o valor total da fatura se não puderem ser extraídos do QR.")
         date_text = issue_date.strip() or str(qr_record.get("issue_date") or "")
         invoice_date = None
@@ -812,6 +820,7 @@ def public_submission(request: Request, token: str, kind: str = Form(...),
                 invoice_date = date.fromisoformat(date_text)
             except ValueError:
                 db.rollback()
+                delete_private_file(doc.storage_key)
                 return render(request, "submission.html", status_code=400, token=token, vendor_name=vendor.name, error="A data da fatura é inválida.")
         db.add(Invoice(company_id=link.company_id, subcontractor_id=vendor.id, document_id=doc.id,
                        number=invoice_number, issue_date=invoice_date, total_amount=amount,
@@ -821,6 +830,7 @@ def public_submission(request: Request, token: str, kind: str = Form(...),
         db.commit()
     except IntegrityError:
         db.rollback()
+        delete_private_file(doc.storage_key)
         return render(request, "submission.html", status_code=409, token=token, vendor_name=vendor.name, error="Este documento pode duplicar um registo existente. Contacte a empresa para confirmar.")
     return render(request, "submission.html", token=token, vendor_name=vendor.name, success="Documento recebido. A empresa irá rever a informação.", error=None)
 

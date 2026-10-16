@@ -81,3 +81,43 @@ def read_private_file(key: str) -> bytes:
     if root not in destination.parents or not destination.is_file():
         raise HTTPException(status_code=404, detail="Documento não encontrado.")
     return destination.read_bytes()
+
+
+
+def delete_private_file(key: str) -> None:
+    """Best-effort cleanup for files whose database transaction did not complete."""
+    settings = get_settings()
+    if not key or ".." in Path(key).parts or key.startswith(("/", "\\")):
+        return
+    if _supabase_enabled():
+        base = settings.supabase_url.rstrip("/")
+        bucket = quote(settings.supabase_storage_bucket, safe="")
+        obj = quote(key, safe="/")
+        try:
+            response = httpx.delete(
+                f"{base}/storage/v1/object/{bucket}/{obj}",
+                headers={
+                    "Authorization": f"Bearer {settings.supabase_service_role_key}",
+                    "apikey": settings.supabase_service_role_key,
+                },
+                timeout=15,
+            )
+            if response.status_code >= 300:
+                import logging
+                logging.getLogger("pagamentoconforme.storage").warning(
+                    "Private file cleanup failed with status %s", response.status_code
+                )
+        except httpx.HTTPError:
+            import logging
+            logging.getLogger("pagamentoconforme.storage").exception("Private file cleanup request failed")
+        return
+
+    root = Path(settings.private_storage_dir).resolve()
+    destination = (root / key).resolve()
+    if root not in destination.parents:
+        return
+    try:
+        destination.unlink(missing_ok=True)
+    except OSError:
+        import logging
+        logging.getLogger("pagamentoconforme.storage").exception("Local private file cleanup failed")
