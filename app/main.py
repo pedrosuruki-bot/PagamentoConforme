@@ -88,7 +88,8 @@ def current_context(request: Request, db: Session):
             Membership.company_id == int(company_id),
         )
     )
-    if not user or not company or not membership or not user.email_verified:
+    if (not user or not company or not membership or not user.email_verified
+            or request.session.get("session_version") != user.session_version):
         request.session.clear()
         return None
     return {"user": user, "company": company, "membership": membership}
@@ -278,6 +279,96 @@ def verify_email(request: Request, token: str, db: Session = Depends(get_db)):
     return render(request, "login.html", notice="Email confirmado. Já pode iniciar sessão.")
 
 
+def password_reset_verifier():
+    return URLSafeTimedSerializer(settings.secret_key, salt="pc-password-reset")
+
+
+def send_password_reset_email(email: str, token: str):
+    reset_url = f"{settings.base_url.rstrip('/')}/reset-password?token={quote(token)}"
+    if settings.resend_api_key and settings.email_from:
+        response = httpx.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {settings.resend_api_key}", "Content-Type": "application/json"},
+            json={
+                "from": settings.email_from,
+                "to": [email],
+                "subject": "Recuperar acesso — PagamentoConforme",
+                "html": f"<p>Recebemos um pedido para alterar a palavra-passe desta conta.</p><p><a href=\"{reset_url}\">Definir nova palavra-passe</a></p><p>A ligação expira em 60 minutos. Se não fez o pedido, ignore esta mensagem.</p>",
+            },
+            timeout=15,
+        )
+        if response.status_code >= 300:
+            logger.error("Password reset provider rejected request: %s", response.status_code)
+            return False
+        return True
+    if not settings.is_production:
+        logger.info("Ligação de recuperação de palavra-passe para %s: %s", email, reset_url)
+        return True
+    logger.error("Email de recuperação não enviado: configure RESEND_API_KEY e EMAIL_FROM.")
+    return False
+
+
+@app.get("/forgot-password", response_class=HTMLResponse)
+def forgot_password_page(request: Request):
+    return render(request, "forgot_password.html")
+
+
+@app.post("/forgot-password", response_class=HTMLResponse)
+def forgot_password(request: Request, email: str = Form(...), csrf: str = Form(...),
+                    db: Session = Depends(get_db)):
+    check_csrf_or_400(request, csrf)
+    normalized_email = email.strip().lower()
+    user = db.scalar(select(User).where(User.email == normalized_email))
+    if user and user.email_verified:
+        token = password_reset_verifier().dumps({"user_id": user.id, "email": user.email, "session_version": user.session_version})
+        send_password_reset_email(user.email, token)
+    # Same response whether the account exists or not, to avoid revealing registered emails.
+    return render(request, "forgot_password.html",
+                  notice="Se existir uma conta confirmada com esse email, enviaremos uma ligação para recuperar o acesso.")
+
+
+@app.get("/reset-password", response_class=HTMLResponse)
+def reset_password_page(request: Request, token: str, db: Session = Depends(get_db)):
+    try:
+        data = password_reset_verifier().loads(token, max_age=60 * 60)
+    except (BadSignature, SignatureExpired):
+        return render(request, "forgot_password.html", status_code=400,
+                      error="A ligação de recuperação é inválida ou expirou. Peça uma nova ligação.")
+    user = db.get(User, int(data.get("user_id", 0)))
+    if (not user or user.email != data.get("email") or not user.email_verified
+            or data.get("session_version") != user.session_version):
+        return render(request, "forgot_password.html", status_code=400,
+                      error="A ligação de recuperação não pode ser utilizada. Peça uma nova ligação.")
+    return render(request, "reset_password.html", token=token)
+
+
+@app.post("/reset-password", response_class=HTMLResponse)
+def reset_password(request: Request, token: str = Form(...), password: str = Form(...),
+                   password_confirm: str = Form(...), csrf: str = Form(...), db: Session = Depends(get_db)):
+    check_csrf_or_400(request, csrf)
+    try:
+        data = password_reset_verifier().loads(token, max_age=60 * 60)
+    except (BadSignature, SignatureExpired):
+        return render(request, "forgot_password.html", status_code=400,
+                      error="A ligação de recuperação é inválida ou expirou. Peça uma nova ligação.")
+    user = db.get(User, int(data.get("user_id", 0)))
+    if (not user or user.email != data.get("email") or not user.email_verified
+            or data.get("session_version") != user.session_version):
+        return render(request, "forgot_password.html", status_code=400,
+                      error="A ligação de recuperação não pode ser utilizada. Peça uma nova ligação.")
+    if len(password) < 12:
+        return render(request, "reset_password.html", status_code=400, token=token,
+                      error="A palavra-passe deve ter pelo menos 12 caracteres.")
+    if password != password_confirm:
+        return render(request, "reset_password.html", status_code=400, token=token,
+                      error="As palavras-passe não coincidem.")
+    user.password_hash = hash_password(password)
+    user.session_version += 1
+    db.commit()
+    return render(request, "login.html", notice="Palavra-passe alterada. Inicie sessão com a nova palavra-passe.")
+
+
+
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
     return render(request, "login.html")
@@ -298,6 +389,7 @@ def login(request: Request, email: str = Form(...), password: str = Form(...),
     request.session.clear()
     request.session["user_id"] = user.id
     request.session["company_id"] = membership.company_id
+    request.session["session_version"] = user.session_version
     csrf_token(request)
     return RedirectResponse("/dashboard", status_code=303)
 
