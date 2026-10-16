@@ -101,6 +101,11 @@ def require_context(request: Request, db: Session):
     return ctx
 
 
+def require_roles(ctx: dict, allowed_roles: set[str]):
+    if ctx["membership"].role not in allowed_roles:
+        raise HTTPException(status_code=403, detail="Não tem permissões para executar esta operação.")
+
+
 def audit(db: Session, company_id: int, user_id: int | None, action: str,
           entity_type: str, entity_id: str, details: dict | None = None):
     db.add(AuditLog(
@@ -391,6 +396,7 @@ def vendor_new(request: Request, name: str = Form(...), nif: str = Form(""),
     ctx = current_context(request, db)
     if not ctx:
         return RedirectResponse("/login", status_code=303)
+    require_roles(ctx, {"owner", "admin", "finance"})
     name = name.strip()
     nif = normalize_nif(nif)
     iban = normalize_iban(iban)
@@ -430,6 +436,7 @@ def create_submission_link(request: Request, vendor_id: int, csrf: str = Form(..
     ctx = current_context(request, db)
     if not ctx:
         return RedirectResponse("/login", status_code=303)
+    require_roles(ctx, {"owner", "admin", "finance"})
     vendor = get_owned_vendor(db, ctx["company"].id, vendor_id)
     now = datetime.utcnow()
     active_links = list(db.scalars(select(SubmissionLink).where(SubmissionLink.company_id == ctx["company"].id, SubmissionLink.subcontractor_id == vendor.id, SubmissionLink.revoked_at.is_(None))))
@@ -458,6 +465,7 @@ def upload_vendor_document(request: Request, vendor_id: int, kind: str = Form(..
     ctx = current_context(request, db)
     if not ctx:
         return RedirectResponse("/login", status_code=303)
+    require_roles(ctx, {"owner", "admin", "finance"})
     vendor = get_owned_vendor(db, ctx["company"].id, vendor_id)
     allowed = {"at_certificate", "social_security_certificate", "work_accident_insurance", "other"}
     if kind not in allowed:
@@ -581,6 +589,8 @@ def approve_invoice(request: Request, invoice_id: int, csrf: str = Form(...), re
     invoice = get_owned_invoice(db, ctx["company"].id, invoice_id)
     if invoice.status not in {"review_required", "pending_documents", "ready_for_review"}:
         raise HTTPException(status_code=409, detail="Esta fatura não está num estado que permita aprovação.")
+    if invoice.status == "pending_documents" and not review_notes.strip():
+        raise HTTPException(status_code=409, detail="A fatura tem documentação pendente. Registe uma justificação explícita para aprovar como exceção.")
     vendor = get_owned_vendor(db, ctx["company"].id, invoice.subcontractor_id)
     if not validate_iban(vendor.iban):
         return RedirectResponse(f"/invoices/{invoice.id}?error=iban", status_code=303)
