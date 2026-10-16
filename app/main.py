@@ -1060,22 +1060,30 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         event = stripe.Webhook.construct_event(payload, signature, settings.stripe_webhook_secret)
     except Exception:
         raise HTTPException(status_code=400, detail="Assinatura do webhook inválida.")
+
     event_id = str(event.get("id") or "")
     event_type = str(event.get("type") or "")
     event_created = int(event.get("created") or 0)
     if not event_id or not event_type:
         raise HTTPException(status_code=400, detail="Evento Stripe sem identificador ou tipo.")
-    existing = db.scalar(select(WebhookEvent).where(WebhookEvent.stripe_event_id == event_id))
-    if existing:
+    if db.scalar(select(WebhookEvent).where(WebhookEvent.stripe_event_id == event_id)):
         return {"received": True, "duplicate": True}
 
     obj = event.get("data", {}).get("object", {})
     metadata = obj.get("metadata") or {}
+    parent_subscription = (obj.get("parent") or {}).get("subscription_details") or {}
+    legacy_subscription_details = obj.get("subscription_details") or {}
     company_id = metadata.get("company_id") or obj.get("client_reference_id")
     customer_id = str(obj.get("customer") or "")
-    subscription_id = str(obj.get("subscription") or "")
+    subscription_id = str(
+        obj.get("subscription")
+        or parent_subscription.get("subscription")
+        or legacy_subscription_details.get("subscription")
+        or ""
+    )
     if event_type.startswith("customer.subscription."):
         subscription_id = str(obj.get("id") or subscription_id)
+
     sub = None
     if company_id and str(company_id).isdigit():
         sub = db.scalar(select(Subscription).where(Subscription.company_id == int(company_id)))
@@ -1091,6 +1099,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         sub = Subscription(company_id=company.id)
         db.add(sub)
         db.flush()
+
     webhook_record = WebhookEvent(
         stripe_event_id=event_id,
         event_type=event_type,
@@ -1101,15 +1110,20 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     db.add(webhook_record)
     db.flush()
 
-    if company and sub:
-        if customer_id:
-            sub.stripe_customer_id = customer_id
-        if event_type == "checkout.session.completed":
-            sub.stripe_subscription_id = subscription_id or sub.stripe_subscription_id
-            if sub.status not in {"active", "trialing", "past_due", "unpaid", "canceled", "cancelled", "incomplete_expired"}:
-                sub.status = "pending_confirmation"
-        elif event_type.startswith("customer.subscription."):
-            if event_created >= sub.last_stripe_event_created:
+    supported_types = {
+        "checkout.session.completed",
+        "invoice.paid",
+        "invoice.payment_failed",
+    }
+    if event_type.startswith("customer.subscription.") or event_type in supported_types:
+        if company and sub and event_created >= sub.last_stripe_event_created:
+            if customer_id:
+                sub.stripe_customer_id = customer_id
+            if event_type == "checkout.session.completed":
+                sub.stripe_subscription_id = subscription_id or sub.stripe_subscription_id
+                if sub.status not in {"active", "trialing", "past_due", "unpaid", "canceled", "cancelled", "incomplete_expired"}:
+                    sub.status = "pending_confirmation"
+            elif event_type.startswith("customer.subscription."):
                 sub.stripe_subscription_id = subscription_id or sub.stripe_subscription_id
                 raw_status = str(obj.get("status") or "")
                 sub.status = raw_status or ("canceled" if event_type.endswith(".deleted") else sub.status)
@@ -1117,18 +1131,25 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                 if items:
                     price = items[0].get("price", {})
                     sub.price_id = str(price.get("id") or sub.price_id)
-                sub.last_stripe_event_created = event_created
-        elif event_type == "invoice.paid":
-            if sub.status not in {"canceled", "cancelled", "incomplete_expired"}:
-                sub.status = "active"
-        elif event_type == "invoice.payment_failed":
-            if sub.status not in {"canceled", "cancelled", "incomplete_expired"}:
-                sub.status = "past_due"
-        sub.updated_at = datetime.utcnow()
-        webhook_record.status = "processed"
-        webhook_record.processed_at = datetime.utcnow()
-        audit(db, company.id, None, "stripe.webhook_processed", "stripe_event", event_id, {"type": event_type})
-    db.commit()
+            elif event_type == "invoice.paid":
+                if sub.status not in {"canceled", "cancelled", "incomplete_expired"}:
+                    sub.status = "active"
+            elif event_type == "invoice.payment_failed":
+                if sub.status not in {"canceled", "cancelled", "incomplete_expired"}:
+                    sub.status = "past_due"
+            sub.last_stripe_event_created = event_created
+            sub.updated_at = datetime.utcnow()
+            webhook_record.status = "processed"
+            webhook_record.processed_at = datetime.utcnow()
+            audit(db, company.id, None, "stripe.webhook_processed", "stripe_event", event_id, {"type": event_type})
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        # A concurrent retry may have inserted the same idempotency key first.
+        if db.scalar(select(WebhookEvent).where(WebhookEvent.stripe_event_id == event_id)):
+            return {"received": True, "duplicate": True}
+        raise
     return {"received": True, "matched": bool(company)}
 
 
