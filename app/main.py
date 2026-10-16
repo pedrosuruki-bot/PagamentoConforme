@@ -24,6 +24,7 @@ from app.db import Base, SessionLocal, engine, get_db
 from app.models import AuditLog, Company, Document, Invoice, Membership, PaymentBatch, PaymentBatchItem, SubmissionLink, Subcontractor, Subscription, User, WebhookEvent, VendorImportBatch
 from app.security import csrf_token, hash_password, make_submission_token, read_submission_token, token_hash, verify_csrf, verify_password
 from app.services.documents import detect_file_type, extract_pdf_text, extract_portuguese_invoice_qr, suggest_invoice_fields
+from app.services.document_status import document_expiry_state, lisbon_today
 from app.services.sepa import build_pain001, validate_draft_xml
 from app.services.vendor_csv import VendorCSVError, parse_subcontractor_csv
 from app.storage import delete_private_file, put_private_file, read_private_file
@@ -44,6 +45,7 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
+templates.env.globals["document_expiry_state"] = document_expiry_state
 
 
 @app.on_event("startup")
@@ -418,11 +420,16 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
     if not ctx:
         return RedirectResponse("/login", status_code=303)
     cid = ctx["company"].id
+    today = lisbon_today()
+    company_documents = list(db.scalars(select(Document).where(Document.company_id == cid)))
+    expiry_states = [document_expiry_state(doc.expires_on, today)["state"] for doc in company_documents]
     totals = {
         "vendors": db.scalar(select(func.count()).select_from(Subcontractor).where(Subcontractor.company_id == cid, Subcontractor.active.is_(True))) or 0,
         "invoices": db.scalar(select(func.count()).select_from(Invoice).where(Invoice.company_id == cid)) or 0,
         "review": db.scalar(select(func.count()).select_from(Invoice).where(Invoice.company_id == cid, Invoice.status == "review_required")) or 0,
-        "documents": db.scalar(select(func.count()).select_from(Document).where(Document.company_id == cid, Document.status == "review_required")) or 0,
+        "documents": sum(1 for state in expiry_states if state == "review_required"),
+        "documents_expired": sum(1 for state in expiry_states if state == "expired"),
+        "documents_expiring": sum(1 for state in expiry_states if state == "expiring_soon"),
         "pending_amount": db.scalar(select(func.coalesce(func.sum(Invoice.total_amount), 0)).where(Invoice.company_id == cid, Invoice.status.in_(["review_required", "pending_documents", "ready_for_review"]))) or 0,
     }
     recent = list(db.scalars(select(Invoice).where(Invoice.company_id == cid).order_by(Invoice.created_at.desc()).limit(6)))
